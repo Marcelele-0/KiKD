@@ -1,0 +1,25 @@
+[project]
+name = "lab-1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "C", "I"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+known_first_party = ["src"]
+multi_line_output = 3
+include_trailing_comma = true
+
+[dependency-groups]
+dev = [
+    "isort>=7.0.0",
+    "pre-commit>=4.3.0",
+    "ruff>=0.14.0",
+]

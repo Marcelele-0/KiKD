@@ -1,0 +1,64 @@
+
+====================================================================================================
+ENTROPY ANALYSIS - ALL TEST FILES
+====================================================================================================
+
+Filename                                      Size (bytes)    H(Y)         H(Y|X)       Reduction   
+----------------------------------------------------------------------------------------------------
+pan.txt                                       482,542         5.0392       3.4445       1.5947      
+sample.jpg                                    96,205          7.2107       4.9577       2.2530      
+sample.zip                                    138             4.0085       1.0138       2.9947      
+test1.bin                                     1,048,576       0.0000       0.0000       0.0000      
+test2.bin                                     1,048,576       8.0000       0.0033       7.9967      
+test3.bin                                     1,048,576       8.0000       8.0000       0.0000      
+====================================================================================================
+
+INTERPRETATION:
+----------------------------------------------------------------------------------------------------
+
+📁 pan.txt:
+   • H(Y) = 5.04: Moderate entropy - typical for text or structured data
+   • H(Y|X) = 3.44: Good predictability - strong sequential dependencies
+   • Reduction = 1.59: Significant information gain from context
+   • 💾 Compressibility: GOOD - statistical methods work well
+   🔍 Type: Natural language text (structural patterns in language)
+
+📁 sample.jpg:
+   • H(Y) = 7.21: High entropy - diverse byte distribution
+   • H(Y|X) = 4.96: Good predictability - strong sequential dependencies
+   • Reduction = 2.25: Significant information gain from context
+   • 💾 Compressibility: GOOD - statistical methods work well
+   🔍 Type: Mixed/structured data
+
+📁 sample.zip:
+   • H(Y) = 4.01: Moderate entropy - typical for text or structured data
+   • H(Y|X) = 1.01: Good predictability - strong sequential dependencies
+   • Reduction = 2.99: Significant information gain from context
+   • 💾 Compressibility: GOOD - statistical methods work well
+   🔍 Type: Natural language text (structural patterns in language)
+
+📁 test1.bin:
+   • H(Y) ≈ 0.00: File contains only one unique byte value (constant data)
+   • H(Y|X) ≈ 0.00: Perfect predictability - next byte is deterministic given previous
+   • Reduction ≈ 0.00: Knowing previous byte provides no information (random data)
+   • 💾 Compressibility: VERY LOW - nearly impossible to compress
+   🔍 Type: Constant data (e.g., all zeros/ones)
+
+📁 test2.bin:
+   • H(Y) ≈ 8.00: Maximum entropy - all 256 byte values appear with equal frequency
+   • H(Y|X) ≈ 0.00: Perfect predictability - next byte is deterministic given previous
+   • Reduction = 8.00: Huge information gain from context
+   • 💾 Compressibility: EXCELLENT - differential/pattern encoding highly effective
+   🔍 Type: Sequential pattern (e.g., 00 01 02 ... FF repeated)
+
+📁 test3.bin:
+   • H(Y) ≈ 8.00: Maximum entropy - all 256 byte values appear with equal frequency
+   • H(Y|X) ≈ 8.00: No predictability - random/independent data
+   • Reduction ≈ 0.00: Knowing previous byte provides no information (random data)
+   • 💾 Compressibility: VERY LOW - nearly impossible to compress
+   🔍 Type: Random/cryptographic data (e.g., /dev/urandom, encrypted file)
+
+====================================================================================================
+
+....
+4 passed in 11.81s

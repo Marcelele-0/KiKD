@@ -61,7 +61,11 @@ class FileAnalyzer:
 
         # H(Y) = -sum(p * log2(p))
         entropy = -np.sum(probabilities * np.log2(probabilities))
-        return entropy
+
+        if abs(entropy) < 1e-12:
+            entropy = 0.0
+
+        return float(entropy)
 
     def calculate_conditional_entropy(self) -> float:
         """Calculates the conditional entropy H(Y|X) of the file's symbols.
@@ -92,7 +96,12 @@ class FileAnalyzer:
 
         # H(Y|X) = sum(P(x) * H(Y|x))
         conditional_entropy = np.sum(p_x * h_y_given_x)
-        return conditional_entropy
+
+        # Clamp tiny numerical negatives to zero for stable output
+        if abs(conditional_entropy) < 1e-12:
+            conditional_entropy = 0.0
+
+        return float(conditional_entropy)
 
     def print_results(self, entropy: float, cond_entropy: float) -> None:
         """Prints the calculated entropy values in a readable format.

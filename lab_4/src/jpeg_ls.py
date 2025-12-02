@@ -1,4 +1,3 @@
-# src/jpeg_ls.py
 import sys
 import numpy as np
 from PIL import Image

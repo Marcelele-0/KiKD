@@ -27,6 +27,7 @@ source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
+    { name = "pytest" },
 ]
 
 [package.dev-dependencies]
@@ -38,6 +39,7 @@ tests = [
 requires-dist = [
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pytest", specifier = ">=9.0.1" },
 ]
 
 [package.metadata.requires-dev]

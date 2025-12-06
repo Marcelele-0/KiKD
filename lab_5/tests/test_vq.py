@@ -1,12 +1,14 @@
-# tests/test_rgb_variants.py
+# tests/test_vq.py
 import pytest
 import os
+import numpy as np
 from pathlib import Path
 from PIL import Image
+from src.vector_quantization import quantize_image
 
-# Konfiguracja ścieżek
+SRC_DIR = Path(__file__).parent.parent / "src"
 TEST_IMAGES_DIR = Path(__file__).parent.parent / "test_images"
-OUTPUT_DIR = Path(__file__).parent.parent / "test_outputs" / "rgb_variants"
+OUTPUT_DIR = Path(__file__).parent.parent / "test_outputs"
 
 @pytest.fixture(autouse=True)
 def setup_output_dir():
@@ -15,62 +17,51 @@ def setup_output_dir():
 def get_test_images():
     if not TEST_IMAGES_DIR.exists():
         return []
-    # Szukamy obrazka z twarzą (lub pierwszego dostępnego)
-    files = list(TEST_IMAGES_DIR.glob("*.png")) + list(TEST_IMAGES_DIR.glob("*.tga"))
-    return files
-
-# Lista wariantów z Twojego obrazka
-VARIANTS = ["000", "800", "080", "008", "088", "808", "880", "888"]
-
-def apply_channel_mask(img, mode_str):
-    """
-    mode_str: np. "800" -> R=8bit, G=0bit, B=0bit
-    """
-    # Rozdziel obraz na kanały R, G, B
-    channels = img.split()
-    if len(channels) > 3:
-        channels = channels[:3] # Ignoruj Alpha jeśli jest
-    
-    r, g, b = channels
-    
-    # Jeśli w stringu jest '0', zamieniamy kanał na czarny (zero bitów)
-    # Jeśli jest '8', zostawiamy bez zmian (8 bitów)
-    if mode_str[0] == '0':
-        r = r.point(lambda _: 0)
-    
-    if mode_str[1] == '0':
-        g = g.point(lambda _: 0)
-        
-    if mode_str[2] == '0':
-        b = b.point(lambda _: 0)
-        
-    # Złącz kanały z powrotem
-    return Image.merge("RGB", (r, g, b))
+    # Obsługa TGA i PNG
+    files = list(TEST_IMAGES_DIR.glob("*.tga")) + list(TEST_IMAGES_DIR.glob("*.png"))
+    return sorted(files)
 
 @pytest.mark.parametrize("image_path", get_test_images())
-@pytest.mark.parametrize("mode", VARIANTS)
-def test_generate_rgb_variant(image_path, mode):
-    """
-    Generuje warianty obrazu: 800 (tylko czerwony), 080 (tylko zielony) itd.
-    """
-    output_path = OUTPUT_DIR / f"{image_path.stem}_{mode}.png"
+@pytest.mark.parametrize("k", [1, 2, 4]) # Testujemy dla 2^1=2, 2^2=4, 2^4=16 kolorów
+def test_vq_process(image_path, k):
+    output_path = OUTPUT_DIR / f"{image_path.stem}_k{k}.tga"
     
-    print(f"Generating {mode} variant for {image_path.name}...")
+    print(f"\nTesting {image_path.name} with K={k} ({2**k} colors)...")
     
-    img = Image.open(image_path).convert("RGB")
+    # Uruchomienie LBG
+    stats = quantize_image(str(image_path), str(output_path), k)
     
-    # Zastosuj maskowanie kanałów
-    new_img = apply_channel_mask(img, mode)
-    
-    new_img.save(output_path)
-    
-    # Weryfikacja: Plik powstał
+    # 1. Sprawdź czy plik istnieje
     assert output_path.exists()
     
-    # Weryfikacja treści (np. dla 800 kanał G i B muszą być czarne)
-    data = new_img.getdata()
-    sample_pixel = data[0] # Pobierz pierwszy piksel
+    # 2. Sprawdź metryki
+    assert stats['mse'] >= 0
+    assert stats['snr'] > 0
+
+    # 3. Sprawdź faktyczną liczbę kolorów w wyniku
+    out_img = Image.open(output_path)
+    out_arr = np.array(out_img)
+    # Znajdź unikalne wiersze (kolory RGB)
+    unique_colors = np.unique(out_arr.reshape(-1, 3), axis=0)
     
-    if mode[0] == '0': assert sample_pixel[0] == 0 # Red powinien być 0
-    if mode[1] == '0': assert sample_pixel[1] == 0 # Green powinien być 0
-    if mode[2] == '0': assert sample_pixel[2] == 0 # Blue powinien być 0
+    expected_max = 2**k
+    
+    print(f"  Colors found: {len(unique_colors)} (Max allowed: {expected_max})")
+    assert len(unique_colors) <= expected_max
+
+def test_vq_zero_k():
+    """Test dla K=0 (2^0 = 1 kolor)."""
+    images = get_test_images()
+    if not images:
+        pytest.skip("Brak obrazów")
+        
+    img_path = images[0]
+    out_path = OUTPUT_DIR / "test_k0.tga"
+    
+    quantize_image(str(img_path), str(out_path), 0)
+    
+    out_img = Image.open(out_path)
+    unique = np.unique(np.array(out_img).reshape(-1, 3), axis=0)
+    
+    # Powinien być dokładnie 1 kolor (uśredniony)
+    assert len(unique) == 1

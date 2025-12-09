@@ -1,159 +1,178 @@
 # src/vector_quantization.py
 import sys
-from typing import Dict, Union
-
 import numpy as np
 from PIL import Image
 
-
-def calculate_mse(original: np.ndarray, quantized: np.ndarray) -> float:
+def calculate_mse(original, quantized):
     """
-    Calculates mean squared error (MSE) between original and quantized image.
-
-    Args:
-        original (np.ndarray): The original image pixels.
-        quantized (np.ndarray): The quantized image pixels.
-
-    Returns:
-        float: The mean squared error.
+    Oblicza błąd średniokwadratowy (MSE) między oryginałem a obrazem po kwantyzacji.
     """
-    err: float = np.mean((original.astype(np.float64) - quantized.astype(np.float64)) ** 2)
+    # Rzutujemy na float64, aby uniknąć przekręcenia licznika (overflow)
+    # MSE = średnia z kwadratów różnic
+    err = np.mean((original.astype(np.float64) - quantized.astype(np.float64)) ** 2)
     return err
 
-
-def calculate_snr(original: np.ndarray, mse: float) -> float:
+def calculate_snr(original, mse):
     """
-    Calculates signal-to-noise ratio (SNR) in dB.
-
-    Args:
-        original (np.ndarray): The original image pixels.
-        mse (float): The mean squared error.
-
-    Returns:
-        float: The signal-to-noise ratio in dB.
+    Oblicza stosunek sygnału do szumu (SNR) w dB.
     """
     if mse == 0:
         return float('inf')
-    signal_power: float = np.mean(original.astype(np.float64) ** 2)
+    
+    # Moc sygnału = średnia kwadratów wartości pikseli oryginału
+    signal_power = np.mean(original.astype(np.float64) ** 2)
+    
+    # SNR = 10 * log10(Moc_Sygnału / Moc_Błędu)
     return 10 * np.log10(signal_power / mse)
 
-
-def get_nearest_centroids_manhattan(pixels: np.ndarray, codebook: np.ndarray) -> np.ndarray:
+def get_nearest_centroids_manhattan(pixels, codebook):
     """
-    Finds index of nearest color from codebook for each pixel using Manhattan distance.
-
-    Args:
-        pixels (np.ndarray): The image pixels of shape (N, 3).
-        codebook (np.ndarray): The codebook centroids of shape (K, 3).
-
-    Returns:
-        np.ndarray: Indices of the nearest centroids for each pixel.
+    Dla każdego piksela znajduje indeks najbliższego koloru z palety (codebook).
+    Używa metryki taksówkowej: |dR| + |dG| + |dB|.
     """
-    diff: np.ndarray = np.abs(pixels[:, np.newaxis, :] - codebook[np.newaxis, :, :])
-    distances: np.ndarray = np.sum(diff, axis=2)
+    # pixels: (N, 3)
+    # codebook: (K, 3)
+    
+    # Obliczamy różnicę każdego piksela z każdym centroidem (Broadcasting)
+    # Wynik diff ma wymiar (N, K, 3)
+    diff = np.abs(pixels[:, np.newaxis, :] - codebook[np.newaxis, :, :])
+    
+    # Sumujemy różnice po kanałach RGB (axis=2) -> Dystans Taksówkowy
+    distances = np.sum(diff, axis=2)
+    
+    # Zwracamy indeksy centroidów o najmniejszym dystansie
     return np.argmin(distances, axis=1)
 
-
-def lbg_algorithm(pixels: np.ndarray, target_k_exponent: int, epsilon: float = 0.01) -> np.ndarray:
+def lbg_algorithm(pixels, target_k_exponent, epsilon=0.01):
     """
-    Linde-Buzo-Gray (LBG) algorithm for vector quantization.
-
-    Args:
-        pixels (np.ndarray): The image pixels.
-        target_k_exponent (int): The exponent for the number of colors (2^k).
-        epsilon (float, optional): The splitting perturbation factor. Defaults to 0.01.
-
-    Returns:
-        np.ndarray: The final codebook.
+    Algorytm Linde-Buzo-Gray (LBG).
+    Argument 'target_k_exponent' to wykładnik (np. 4 oznacza 2^4 = 16 kolorów).
     """
-    centroid_avg: np.ndarray = np.mean(pixels, axis=0)
-    codebook: np.ndarray = np.array([centroid_avg])
-    current_k_exponent: int = 0
+    # 1. Inicjalizacja: Jeden centroid będący średnią wszystkich pikseli
+    # axis=0 oznacza średnią po kolumnach (R, G, B)
+    centroid_avg = np.mean(pixels, axis=0)
+    codebook = np.array([centroid_avg])
+    
+    current_k_exponent = 0
+    
+    # Dopóki nie mamy wymaganej liczby bitów (potęgi dwójki)
     while current_k_exponent < target_k_exponent:
-        # Splitting step
-        cb_plus: np.ndarray = codebook * (1 + epsilon)
-        cb_minus: np.ndarray = codebook * (1 - epsilon)
+        # --- KROK 1: SPLITTING (Rozszczepianie) ---
+        # Każdy obecny centroid C zamieniamy na dwa: C*(1+eps) i C*(1-eps)
+        # Podwajamy w ten sposób rozmiar codebooka.
+        cb_plus = codebook * (1 + epsilon)
+        cb_minus = codebook * (1 - epsilon)
         codebook = np.vstack((cb_plus, cb_minus))
+        
         current_k_exponent += 1
-        # Optimization (K-Means iterations)
-        max_iterations: int = 10
+        
+        # --- KROK 2: OPTYMALIZACJA (Iteracje K-Means) ---
+        # Przesuwamy centroidy w stronę faktycznych skupisk pikseli.
+        # W zadaniu nie podano warunku stopu, przyjmujemy stałą liczbę iteracji.
+        max_iterations = 10
+        
         for _ in range(max_iterations):
-            labels: np.ndarray = get_nearest_centroids_manhattan(pixels, codebook)
-            new_codebook: np.ndarray = np.zeros_like(codebook)
+            # A. Przypisz piksele do najbliższych centroidów (metryka taksówkowa)
+            labels = get_nearest_centroids_manhattan(pixels, codebook)
+            
+            # B. Oblicz nowe pozycje centroidów
+            new_codebook = np.zeros_like(codebook)
+            
             for i in range(len(codebook)):
-                cluster_pixels: np.ndarray = pixels[labels == i]
+                # Wybierz wszystkie piksele przypisane do klastra 'i'
+                cluster_pixels = pixels[labels == i]
+                
                 if len(cluster_pixels) > 0:
+                    # Nowy centroid to średnia arytmetyczna jego pikseli
                     new_codebook[i] = np.mean(cluster_pixels, axis=0)
                 else:
+                    # Jeśli centroid jest "martwy" (zero pikseli), zostawiamy go
+                    # (lub można go losowo zresetować, tu zostawiamy dla prostoty)
                     new_codebook[i] = codebook[i]
+            
+            # Aktualizuj codebook
             codebook = new_codebook
+
     return codebook
 
-
-def quantize_image(input_path: str, output_path: str, k_exponent: int) -> Dict[str, Union[float, int]]:
+def quantize_image(input_path, output_path, k_exponent):
     """
-    Main function for quantization.
-
-    Args:
-        input_path (str): Path to the input image.
-        output_path (str): Path to save the quantized image.
-        k_exponent (int): Number of bits (e.g. 8 means 256 colors).
-
-    Returns:
-        Dict[str, Union[float, int]]: A dictionary containing MSE, SNR, and color count.
+    Główna funkcja wykonująca zadanie.
+    k_exponent: liczba bitów (np. 8), co daje 2^8 = 256 kolorów.
     """
-    print(f"Loading: {input_path}")
-    img: Image.Image = Image.open(input_path).convert('RGB')
+    print(f"Wczytywanie: {input_path}")
+    img = Image.open(input_path).convert('RGB')
     width, height = img.size
-    pixels_orig: np.ndarray = np.array(img, dtype=np.float64)
-    flat_pixels: np.ndarray = pixels_orig.reshape(-1, 3)
-    target_colors: int = 2 ** k_exponent
-    unique_pixels: np.ndarray = np.unique(flat_pixels, axis=0)
+    
+    # Konwersja na float64 dla dokładności obliczeń LBG
+    # Spłaszczamy obraz do listy pikseli (N, 3)
+    pixels_orig = np.array(img, dtype=np.float64)
+    flat_pixels = pixels_orig.reshape(-1, 3)
+    
+    target_colors = 2 ** k_exponent
+    
+    # Zabezpieczenie: jeśli chcemy więcej kolorów niż jest pikseli, LBG nie ma sensu
+    unique_pixels = np.unique(flat_pixels, axis=0)
+    
     if k_exponent >= 24 or target_colors >= len(unique_pixels):
-        print(f"Number of colors ({target_colors}) covers original. Copying.")
-        quantized_pixels: np.ndarray = flat_pixels
+        print(f"Liczba kolorów ({target_colors}) pokrywa oryginał. Kopiowanie.")
+        quantized_pixels = flat_pixels
     else:
-        print(f"Running LBG for k={k_exponent} ({target_colors} colors)...")
-        final_codebook: np.ndarray = lbg_algorithm(flat_pixels, k_exponent)
-        labels: np.ndarray = get_nearest_centroids_manhattan(flat_pixels, final_codebook)
-        quantized_pixels: np.ndarray = final_codebook[labels]
-    quantized_img_array: np.ndarray = np.clip(quantized_pixels, 0, 255).reshape(height, width, 3).astype(np.uint8)
-    out_img: Image.Image = Image.fromarray(quantized_img_array)
+        print(f"Uruchamianie LBG dla k={k_exponent} ({target_colors} kolorów)...")
+        # 1. Znajdź najlepszą paletę (Codebook)
+        final_codebook = lbg_algorithm(flat_pixels, k_exponent)
+        
+        # 2. Skwantyzuj obraz (przypisz każdemu pikselowi kolor z palety)
+        labels = get_nearest_centroids_manhattan(flat_pixels, final_codebook)
+        quantized_pixels = final_codebook[labels]
+    
+    # Rekonstrukcja obrazu (powrót do uint8)
+    # Clip jest ważny, bo operacje float mogły dać np. 255.0001
+    quantized_img_array = np.clip(quantized_pixels, 0, 255).reshape(height, width, 3).astype(np.uint8)
+    
+    # Zapis
+    out_img = Image.fromarray(quantized_img_array)
     out_img.save(output_path)
-    print(f"Saved: {output_path}")
-    mse: float = calculate_mse(flat_pixels, quantized_pixels)
-    snr: float = calculate_snr(flat_pixels, mse)
+    print(f"Zapisano: {output_path}")
+    
+    # Statystyki
+    mse = calculate_mse(flat_pixels, quantized_pixels)
+    snr = calculate_snr(flat_pixels, mse)
+    
     return {
         "mse": mse,
         "snr": snr,
         "colors_count": target_colors
     }
 
-
-def main() -> None:
+def main():
     if len(sys.argv) != 4:
-        print("Usage: python vector_quantization.py <input.tga> <output.tga> <K>")
-        print("Where number of colors = 2^K")
+        print("Użycie: python vector_quantization.py <input.tga> <output.tga> <K>")
+        print("Gdzie liczba kolorów = 2^K")
         sys.exit(1)
-    input_file: str = sys.argv[1]
-    output_file: str = sys.argv[2]
+        
+    input_file = sys.argv[1]
+    output_file = sys.argv[2]
+    
     try:
-        k_exponent: int = int(sys.argv[3])
+        k_exponent = int(sys.argv[3])
         if not (0 <= k_exponent <= 24):
-            raise ValueError("K must be between 0 and 24.")
+            raise ValueError("K musi być między 0 a 24.")
     except ValueError as e:
-        print(f"Argument error: {e}")
+        print(f"Błąd argumentu: {e}")
         sys.exit(1)
+        
     try:
         res = quantize_image(input_file, output_file, k_exponent)
-        print("\n--- Results ---")
-        print(f"Number of colors: {res['colors_count']}")
+        
+        print("\n--- Wyniki ---")
+        print(f"Liczba kolorów: {res['colors_count']}")
         print(f"MSE: {res['mse']:.4f}")
         print(f"SNR: {res['snr']:.4f} dB")
+        
     except Exception as e:
-        print(f"Error occurred: {e}")
+        print(f"Wystąpił błąd: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

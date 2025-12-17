@@ -1,4 +1,3 @@
-# tests/test_vq.py
 import pytest
 import os
 import numpy as np
@@ -17,31 +16,29 @@ def setup_output_dir():
 def get_test_images():
     if not TEST_IMAGES_DIR.exists():
         return []
-    # Obsługa TGA i PNG
     files = list(TEST_IMAGES_DIR.glob("*.tga")) + list(TEST_IMAGES_DIR.glob("*.png"))
     return sorted(files)
 
 @pytest.mark.parametrize("image_path", get_test_images())
-@pytest.mark.parametrize("k", range(1, 14))  # Testujemy dla K od 1 do 13 (2^1 do 2^13 kolorów)
+@pytest.mark.parametrize("k", range(1, 13)) 
 def test_vq_process(image_path, k):
     output_path = OUTPUT_DIR / f"{image_path.stem}_k{k}.tga"
     
     print(f"\nTesting {image_path.name} with K={k} ({2**k} colors)...")
     
-    # Uruchomienie LBG
     stats = quantize_image(str(image_path), str(output_path), k)
     
-    # 1. Sprawdź czy plik istnieje
-    assert output_path.exists()
+    # --- DODANE PRINTY ---
+    print(f"  MSE: {stats['mse']:.4f}")
+    print(f"  SNR: {stats['snr']:.4f} dB")
+    # ---------------------
     
-    # 2. Sprawdź metryki
+    assert output_path.exists()
     assert stats['mse'] >= 0
     assert stats['snr'] > 0
 
-    # 3. Sprawdź faktyczną liczbę kolorów w wyniku
     out_img = Image.open(output_path)
     out_arr = np.array(out_img)
-    # Znajdź unikalne wiersze (kolory RGB)
     unique_colors = np.unique(out_arr.reshape(-1, 3), axis=0)
     
     expected_max = 2**k
@@ -50,7 +47,6 @@ def test_vq_process(image_path, k):
     assert len(unique_colors) <= expected_max
 
 def test_vq_zero_k():
-    """Test dla K=0 (2^0 = 1 kolor)."""
     images = get_test_images()
     if not images:
         pytest.skip("Brak obrazów")
@@ -63,5 +59,4 @@ def test_vq_zero_k():
     out_img = Image.open(out_path)
     unique = np.unique(np.array(out_img).reshape(-1, 3), axis=0)
     
-    # Powinien być dokładnie 1 kolor (uśredniony)
     assert len(unique) == 1

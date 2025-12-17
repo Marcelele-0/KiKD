@@ -1,178 +1,183 @@
-# src/vector_quantization.py
 import sys
 import numpy as np
 from PIL import Image
+import time
+
+# Próba importu CuPy (dla GPU)
+try:
+    import cupy as cp
+    print("Sukces: Wykryto CuPy! Obliczenia będą wykonywane na GPU.")
+    USE_GPU = True
+except ImportError:
+    print("Uwaga: Nie wykryto biblioteki CuPy. Obliczenia na CPU (wolne!).")
+    print("Zainstaluj: pip install cupy-cuda11x (lub 12x)")
+    import numpy as cp  # Fallback: cp będzie udawało np
+    USE_GPU = False
 
 def calculate_mse(original, quantized):
-    """
-    Oblicza błąd średniokwadratowy (MSE) między oryginałem a obrazem po kwantyzacji.
-    """
-    # Rzutujemy na float64, aby uniknąć przekręcenia licznika (overflow)
-    # MSE = średnia z kwadratów różnic
+    # MSE liczymy na końcu, może być na CPU (numpy), bo to jednorazowa akcja
+    # Upewniamy się, że dane są na CPU (.get() jeśli to cupy array)
+    if hasattr(original, 'get'): original = original.get()
+    if hasattr(quantized, 'get'): quantized = quantized.get()
+    
     err = np.mean((original.astype(np.float64) - quantized.astype(np.float64)) ** 2)
     return err
 
 def calculate_snr(original, mse):
-    """
-    Oblicza stosunek sygnału do szumu (SNR) w dB.
-    """
-    if mse == 0:
-        return float('inf')
-    
-    # Moc sygnału = średnia kwadratów wartości pikseli oryginału
+    if hasattr(original, 'get'): original = original.get()
+    if mse == 0: return float('inf')
     signal_power = np.mean(original.astype(np.float64) ** 2)
-    
-    # SNR = 10 * log10(Moc_Sygnału / Moc_Błędu)
     return 10 * np.log10(signal_power / mse)
 
-def get_nearest_centroids_manhattan(pixels, codebook):
+def get_nearest_centroids_gpu_batched(pixels, codebook):
     """
-    Dla każdego piksela znajduje indeks najbliższego koloru z palety (codebook).
-    Używa metryki taksówkowej: |dR| + |dG| + |dB|.
+    Wersja GPU z podziałem na partie (batches).
+    Zapobiega błędowi 'Out Of Memory' przy dużym K.
     """
-    # pixels: (N, 3)
-    # codebook: (K, 3)
+    n_pixels = pixels.shape[0]
+    # Rozmiar partii - dostosuj do pamięci GPU (np. 4000-8000 jest bezpieczne dla 6-8GB VRAM)
+    batch_size = 4096 
     
-    # Obliczamy różnicę każdego piksela z każdym centroidem (Broadcasting)
-    # Wynik diff ma wymiar (N, K, 3)
-    diff = np.abs(pixels[:, np.newaxis, :] - codebook[np.newaxis, :, :])
+    labels = cp.empty(n_pixels, dtype=cp.int32)
     
-    # Sumujemy różnice po kanałach RGB (axis=2) -> Dystans Taksówkowy
-    distances = np.sum(diff, axis=2)
-    
-    # Zwracamy indeksy centroidów o najmniejszym dystansie
-    return np.argmin(distances, axis=1)
+    # Iterujemy kawałkami
+    for i in range(0, n_pixels, batch_size):
+        end = min(i + batch_size, n_pixels)
+        batch = pixels[i:end]
+        
+        # 1. Broadcasting na małym wycinku (bezpieczne dla VRAM)
+        # batch: (B, 1, 3), codebook: (1, K, 3) -> diff: (B, K, 3)
+        diff = cp.abs(batch[:, cp.newaxis, :] - codebook[cp.newaxis, :, :])
+        
+        # 2. Suma (Taksówkowa)
+        dists = cp.sum(diff, axis=2)
+        
+        # 3. Argmin
+        labels[i:end] = cp.argmin(dists, axis=1)
+        
+        # (Opcjonalnie) Czyścimy pamięć podręczą co jakiś czas
+        # cp.get_default_memory_pool().free_all_blocks() 
+        
+    return labels
 
-def lbg_algorithm(pixels, target_k_exponent, epsilon=0.01):
-    """
-    Algorytm Linde-Buzo-Gray (LBG).
-    Argument 'target_k_exponent' to wykładnik (np. 4 oznacza 2^4 = 16 kolorów).
-    """
-    # 1. Inicjalizacja: Jeden centroid będący średnią wszystkich pikseli
-    # axis=0 oznacza średnią po kolumnach (R, G, B)
-    centroid_avg = np.mean(pixels, axis=0)
-    codebook = np.array([centroid_avg])
+def lbg_algorithm_gpu(pixels, target_k_exponent, epsilon=0.01):
+    # 1. Inicjalizacja na GPU
+    # Przenosimy dane na GPU tylko raz!
+    pixels_gpu = cp.asarray(pixels)
+    
+    centroid_avg = cp.mean(pixels_gpu, axis=0)
+    codebook_gpu = cp.array([centroid_avg])
     
     current_k_exponent = 0
+    print(f"Start LBG (GPU): 1 -> {2**target_k_exponent} kolorów")
     
-    # Dopóki nie mamy wymaganej liczby bitów (potęgi dwójki)
     while current_k_exponent < target_k_exponent:
-        # --- KROK 1: SPLITTING (Rozszczepianie) ---
-        # Każdy obecny centroid C zamieniamy na dwa: C*(1+eps) i C*(1-eps)
-        # Podwajamy w ten sposób rozmiar codebooka.
-        cb_plus = codebook * (1 + epsilon)
-        cb_minus = codebook * (1 - epsilon)
-        codebook = np.vstack((cb_plus, cb_minus))
+        # --- SPLITTING ---
+        cb_plus = codebook_gpu * (1 + epsilon)
+        cb_minus = codebook_gpu * (1 - epsilon)
+        codebook_gpu = cp.vstack((cb_plus, cb_minus))
         
         current_k_exponent += 1
+        current_colors = len(codebook_gpu)
         
-        # --- KROK 2: OPTYMALIZACJA (Iteracje K-Means) ---
-        # Przesuwamy centroidy w stronę faktycznych skupisk pikseli.
-        # W zadaniu nie podano warunku stopu, przyjmujemy stałą liczbę iteracji.
+        sys.stdout.write(f"\r[Etap {current_k_exponent}/{target_k_exponent}] Rozszczepianie do {current_colors} kolorów... ")
+        sys.stdout.flush()
+        
+        # --- OPTYMALIZACJA ---
         max_iterations = 10
-        
-        for _ in range(max_iterations):
-            # A. Przypisz piksele do najbliższych centroidów (metryka taksówkowa)
-            labels = get_nearest_centroids_manhattan(pixels, codebook)
+        for it in range(max_iterations):
+            # A. Przypisz (korzystając z funkcji batched)
+            labels = get_nearest_centroids_gpu_batched(pixels_gpu, codebook_gpu)
             
-            # B. Oblicz nowe pozycje centroidów
-            new_codebook = np.zeros_like(codebook)
+            # B. Aktualizuj centroidy
+            # Niestety pętla po centroidach w Pythonie jest wolna nawet z CuPy.
+            # Ale przy 8192 kolorach GPU i tak nadrobi czas na liczeniu dystansów.
             
-            for i in range(len(codebook)):
-                # Wybierz wszystkie piksele przypisane do klastra 'i'
-                cluster_pixels = pixels[labels == i]
-                
-                if len(cluster_pixels) > 0:
-                    # Nowy centroid to średnia arytmetyczna jego pikseli
-                    new_codebook[i] = np.mean(cluster_pixels, axis=0)
+            new_codebook = cp.zeros_like(codebook_gpu)
+            
+            # Aby przyspieszyć, można by użyć kernelów CUDA, ale zostańmy przy czytelnym kodzie.
+            # Ważne: Wszystkie operacje tutaj dzieją się wewnątrz VRAM.
+            for i in range(len(codebook_gpu)):
+                # Boolean indexing na GPU jest bardzo szybki
+                mask = (labels == i)
+                # Sprawdzamy czy są jakieś piksele (sumowanie booleanów daje liczbę true)
+                if cp.any(mask):
+                    new_codebook[i] = cp.mean(pixels_gpu[mask], axis=0)
                 else:
-                    # Jeśli centroid jest "martwy" (zero pikseli), zostawiamy go
-                    # (lub można go losowo zresetować, tu zostawiamy dla prostoty)
-                    new_codebook[i] = codebook[i]
+                    new_codebook[i] = codebook_gpu[i]
             
-            # Aktualizuj codebook
-            codebook = new_codebook
+            codebook_gpu = new_codebook
+            
+            sys.stdout.write(f"\r[Etap {current_k_exponent}/{target_k_exponent}] {current_colors} kol.: iter {it+1}/{max_iterations}")
+            sys.stdout.flush()
 
-    return codebook
+    print("\nLBG zakończony.")
+    
+    # Na samym końcu zwracamy wynik (nadal na GPU, żeby szybko zrobić rekonstrukcję)
+    return codebook_gpu
 
 def quantize_image(input_path, output_path, k_exponent):
-    """
-    Główna funkcja wykonująca zadanie.
-    k_exponent: liczba bitów (np. 8), co daje 2^8 = 256 kolorów.
-    """
     print(f"Wczytywanie: {input_path}")
     img = Image.open(input_path).convert('RGB')
     width, height = img.size
     
-    # Konwersja na float64 dla dokładności obliczeń LBG
-    # Spłaszczamy obraz do listy pikseli (N, 3)
     pixels_orig = np.array(img, dtype=np.float64)
     flat_pixels = pixels_orig.reshape(-1, 3)
     
     target_colors = 2 ** k_exponent
-    
-    # Zabezpieczenie: jeśli chcemy więcej kolorów niż jest pikseli, LBG nie ma sensu
     unique_pixels = np.unique(flat_pixels, axis=0)
     
     if k_exponent >= 24 or target_colors >= len(unique_pixels):
-        print(f"Liczba kolorów ({target_colors}) pokrywa oryginał. Kopiowanie.")
-        quantized_pixels = flat_pixels
+        print("Liczba kolorów pokrywa oryginał. Kopiowanie.")
+        quantized_pixels_np = flat_pixels
     else:
-        print(f"Uruchamianie LBG dla k={k_exponent} ({target_colors} kolorów)...")
-        # 1. Znajdź najlepszą paletę (Codebook)
-        final_codebook = lbg_algorithm(flat_pixels, k_exponent)
+        # --- Start sekcji GPU ---
+        start_time = time.time()
         
-        # 2. Skwantyzuj obraz (przypisz każdemu pikselowi kolor z palety)
-        labels = get_nearest_centroids_manhattan(flat_pixels, final_codebook)
-        quantized_pixels = final_codebook[labels]
+        # 1. LBG na GPU
+        final_codebook_gpu = lbg_algorithm_gpu(flat_pixels, k_exponent)
+        
+        # 2. Rekonstrukcja na GPU (przypisanie po raz ostatni)
+        # Przenosimy piksele na GPU (jeśli funkcja LBG tego nie zwróciła)
+        pixels_gpu = cp.asarray(flat_pixels)
+        final_labels = get_nearest_centroids_gpu_batched(pixels_gpu, final_codebook_gpu)
+        
+        # Fancy indexing na GPU
+        quantized_pixels_gpu = final_codebook_gpu[final_labels]
+        
+        # 3. Powrót na CPU (dopiero teraz!)
+        quantized_pixels_np = cp.asnumpy(quantized_pixels_gpu)
+        
+        end_time = time.time()
+        print(f"Czas obliczeń na GPU: {end_time - start_time:.2f} s")
+        # --- Koniec sekcji GPU ---
+
+    quantized_img_array = np.clip(quantized_pixels_np, 0, 255).reshape(height, width, 3).astype(np.uint8)
     
-    # Rekonstrukcja obrazu (powrót do uint8)
-    # Clip jest ważny, bo operacje float mogły dać np. 255.0001
-    quantized_img_array = np.clip(quantized_pixels, 0, 255).reshape(height, width, 3).astype(np.uint8)
-    
-    # Zapis
     out_img = Image.fromarray(quantized_img_array)
     out_img.save(output_path)
     print(f"Zapisano: {output_path}")
     
-    # Statystyki
-    mse = calculate_mse(flat_pixels, quantized_pixels)
+    mse = calculate_mse(flat_pixels, quantized_pixels_np)
     snr = calculate_snr(flat_pixels, mse)
     
-    return {
-        "mse": mse,
-        "snr": snr,
-        "colors_count": target_colors
-    }
+    return {"mse": mse, "snr": snr, "colors_count": target_colors}
 
 def main():
     if len(sys.argv) != 4:
-        print("Użycie: python vector_quantization.py <input.tga> <output.tga> <K>")
-        print("Gdzie liczba kolorów = 2^K")
+        print("Użycie: python vq_gpu.py <input.tga> <output.tga> <K>")
         sys.exit(1)
-        
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
     
+    # ... (reszta obsługi argumentów bez zmian) ...
     try:
-        k_exponent = int(sys.argv[3])
-        if not (0 <= k_exponent <= 24):
-            raise ValueError("K musi być między 0 a 24.")
-    except ValueError as e:
-        print(f"Błąd argumentu: {e}")
-        sys.exit(1)
-        
-    try:
-        res = quantize_image(input_file, output_file, k_exponent)
-        
+        k = int(sys.argv[3])
+        if not (0 <= k <= 24): raise ValueError
+        res = quantize_image(sys.argv[1], sys.argv[2], k)
         print("\n--- Wyniki ---")
-        print(f"Liczba kolorów: {res['colors_count']}")
         print(f"MSE: {res['mse']:.4f}")
         print(f"SNR: {res['snr']:.4f} dB")
-        
     except Exception as e:
-        print(f"Wystąpił błąd: {e}")
-        sys.exit(1)
+        print(f"Błąd: {e}")
 
 if __name__ == "__main__":
     main()

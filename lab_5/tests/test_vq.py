@@ -22,7 +22,7 @@ def get_test_images():
     return sorted(files)
 
 @pytest.mark.parametrize("image_path", get_test_images())
-@pytest.mark.parametrize("k", [1, 2, 4]) # Testujemy dla 2^1=2, 2^2=4, 2^4=16 kolorów
+@pytest.mark.parametrize("k", range(1, 14))  # Testujemy dla K od 1 do 13 (2^1 do 2^13 kolorów)
 def test_vq_process(image_path, k):
     output_path = OUTPUT_DIR / f"{image_path.stem}_k{k}.tga"
     

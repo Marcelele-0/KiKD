@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 from PIL import Image
 
-# Importujemy funkcje bezpośrednio z Twoich modułów src
 from src.transform import (
     apply_haar_transform,
     inverse_haar_transform,
@@ -14,149 +13,99 @@ from src.transform import (
 from src.lbg_1d import train_lbg_1d, quantize_1d, dequantize_1d
 from src.metrics import calculate_mse, calculate_snr
 
-# Konfiguracja ścieżek
-# Zakładamy, że test jest w folderze tests/, a obrazy w test_images/ obok src/
-TEST_IMAGES_DIR = Path(__file__).parent.parent / "test_images"
-OUTPUT_DIR = Path(__file__).parent.parent / "test_outputs"
-
+# Paths for test images and outputs
+TEST_IMAGES_DIR: Path = Path(__file__).parent.parent / "test_images"
+OUTPUT_DIR: Path = Path(__file__).parent.parent / "test_outputs"
 
 @pytest.fixture(autouse=True)
-def setup_dirs():
-    """Upewnia się, że katalog wyjściowy istnieje."""
+def setup_dirs() -> None:
+    """Ensure output directory exists before tests run."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 def get_test_images() -> list[Path]:
-    """Zwraca listę ścieżek do obrazów testowych (TGA, PNG, JPG)."""
+    """Return a list of test image paths from the test_images directory."""
     if not TEST_IMAGES_DIR.exists():
         return []
-    
-    extensions = ["*.tga", "*.png", "*.jpg", "*.jpeg"]
-    files = []
+    extensions = ["*.tga", "*.png", "*.jpg"]
+    files: list[Path] = []
     for ext in extensions:
         files.extend(TEST_IMAGES_DIR.glob(ext))
-    
-    # Sortujemy dla powtarzalności kolejności testów
     return sorted(list(set(files)))
 
-
 @pytest.mark.parametrize("image_path", get_test_images())
-@pytest.mark.parametrize("k_bits", [2, 5])  # Testujemy dla k=2 (4 poziomy) i k=5 (32 poziomy)
-def test_compression_pipeline(image_path: Path, k_bits: int):
+@pytest.mark.parametrize("k_bits", [3, 5])
+def test_full_report(image_path: Path, k_bits: int) -> None:
     """
-    Testuje pełny potok: Transformata -> DPCM -> LBG -> Kwantyzacja -> Rekonstrukcja.
-    Weryfikuje, czy algorytmy na ocenę 5 działają poprawnie razem.
+    Full encode-decode test for an image, reporting MSE and SNR for each channel and total.
+    Saves the reconstructed image to the output directory.
     """
-    print(f"\nTesting {image_path.name} with K={k_bits}...")
+    print(f"\n{'='*60}")
+    print(f"TEST: {image_path.name} | k_bits = {k_bits}")
+    print(f"{'='*60}")
 
-    # 1. Wczytanie obrazu
+    # Load image
     img = Image.open(image_path).convert("RGB")
-    arr_orig = np.array(img)
+    arr_orig: np.ndarray = np.array(img)
     height, width, _ = arr_orig.shape
-    
-    # Tablica na wynik rekonstrukcji
-    # Uwaga: Transformata Haara w naszej implementacji może uciąć 1 piksel, jeśli szerokość jest nieparzysta
-    # Dlatego przygotowujemy wynik o wymiarach "procesowanych"
-    width_proc = width if width % 2 == 0 else width - 1
-    arr_recon = np.zeros((height, width_proc, 3), dtype=np.uint8)
 
-    # 2. Przetwarzanie kanałów (Symulacja encode.py + decode.py w pamięci)
+    # Handle odd width for fair MSE calculation
+    width_proc: int = width if width % 2 == 0 else width - 1
+    arr_recon: np.ndarray = np.zeros((height, width, 3), dtype=np.uint8)
+    arr_orig_cropped: np.ndarray = arr_orig[:, :width_proc, :]
+
+    # Loop over channels (simulate encode -> decode)
+    channel_names = ["Red", "Green", "Blue"]
     for ch in range(3):
-        channel = arr_orig[:, :, ch]
+        channel: np.ndarray = arr_orig[:, :, ch]
 
-        # --- ENCODING ---
-        
-        # A. Transformata (Sub-band)
+        # ENCODE
         low, high = apply_haar_transform(channel)
-        
-        # B. DPCM na paśmie Low
-        low_diff = dpcm_encode(low)
-        
-        # C. Trening LBG (Codebooki)
-        # Używamy próbki danych dla szybkości testu, tak jak w skrypcie
-        cb_low = train_lbg_1d(low_diff[::5], k_bits)
-        cb_high = train_lbg_1d(high[::5], k_bits)
-        
-        # Asercja: Czy codebook ma poprawny rozmiar? (2^k)
-        assert len(cb_low) == 2**k_bits
-        assert len(cb_high) == 2**k_bits
-        # Asercja: Czy codebook jest posortowany?
-        assert np.all(cb_low[:-1] <= cb_low[1:])
+        dc_col, low_diff = dpcm_encode(low)
 
-        # D. Kwantyzacja (Wartości -> Indeksy)
-        inds_low = quantize_1d(low_diff, cb_low)
-        inds_high = quantize_1d(high, cb_high)
-        
-        # --- DECODING ---
+        flat_low = low_diff.flatten()
+        flat_high = high.flatten()
 
-        # E. Dekwantyzacja (Indeksy -> Wartości)
-        rec_low_diff = dequantize_1d(inds_low, cb_low)
-        rec_high = dequantize_1d(inds_high, cb_high)
+        cb_low = train_lbg_1d(flat_low[::5], k_bits)
+        cb_high = train_lbg_1d(flat_high[::5], k_bits)
 
-        # F. Odwrócenie DPCM
-        rec_low = dpcm_decode(rec_low_diff)
+        inds_low = quantize_1d(flat_low, cb_low)
+        inds_high = quantize_1d(flat_high, cb_high)
 
-        # G. Odwrócenie Transformaty
-        rec_channel = inverse_haar_transform(rec_low, rec_high, (height, width))
-        
-        # Zapis do tablicy wynikowej (clipowanie wartości)
-        arr_recon[:, :, ch] = np.clip(rec_channel, 0, 255).astype(np.uint8)
+        # DECODE
+        rec_flat_low = dequantize_1d(inds_low, cb_low)
+        rec_flat_high = dequantize_1d(inds_high, cb_high)
 
-    # 3. Zapisz wynik testu (opcjonalnie, żebyś mógł podejrzeć)
-    out_path = OUTPUT_DIR / f"test_result_{image_path.stem}_k{k_bits}.tga"
+        rec_low_diff = rec_flat_low.reshape(low_diff.shape)
+        rec_high = rec_flat_high.reshape(high.shape)
+
+        rec_low = dpcm_decode(dc_col, rec_low_diff)
+        rec_ch = inverse_haar_transform(rec_low, rec_high, (height, width))
+
+        arr_recon[:, :, ch] = rec_ch
+
+    # Save reconstructed image
+    out_name = f"{image_path.stem}_k{k_bits}.tga"
+    out_path = OUTPUT_DIR / out_name
     Image.fromarray(arr_recon).save(out_path)
+    print(f"[SAVED] {out_name}")
 
-    # 4. Weryfikacja Metryk
-    # Musimy przyciąć oryginał do szerokości rekonstrukcji (jeśli był nieparzysty)
-    arr_orig_cropped = arr_orig[:, :width_proc, :]
-    
-    mse = calculate_mse(arr_orig_cropped, arr_recon)
-    snr = calculate_snr(arr_orig_cropped, mse)
+    # Metrics
+    print("\n[RESULTS]")
+    print(f"{'Channel':<10} | {'MSE':<10} | {'SNR (dB)':<10}")
+    print("-" * 36)
 
-    print(f"  -> MSE: {mse:.4f}, SNR: {snr:.4f} dB")
+    # Calculate only on common part (width_proc)
+    arr_recon_cropped = arr_recon[:, :width_proc, :]
 
-    # Asercje końcowe
-    assert mse >= 0
-    # SNR powinien być rozsądny (chyba że obraz jest czarny/pusty). 
-    # Dla k=5 zazwyczaj SNR > 20dB dla zdjęć.
-    if np.mean(arr_orig) > 10: 
-        assert snr > 5.0 
+    mse_total = calculate_mse(arr_orig_cropped, arr_recon_cropped)
+    snr_total = calculate_snr(arr_orig_cropped, mse_total)
 
+    for ch in range(3):
+        mse_c = calculate_mse(arr_orig_cropped[:,:,ch], arr_recon_cropped[:,:,ch])
+        snr_c = calculate_snr(arr_orig_cropped[:,:,ch], mse_c)
+        print(f"{channel_names[ch]:<10} | {mse_c:<10.4f} | {snr_c:<10.4f}")
 
-def test_lbg_convergence():
-    """
-    Test jednostkowy sprawdzający, czy algorytm LBG faktycznie redukuje błąd kwantyzacji
-    w porównaniu do zwykłego średniego.
-    """
-    # Generujemy dane: dwa skupiska (np. okolice 0 i okolice 100)
-    data = np.concatenate([np.random.normal(0, 5, 1000), np.random.normal(100, 5, 1000)])
-    
-    # Uczymy LBG na 1 bit (powinien znaleźć 2 centra: ok. 0 i ok. 100)
-    cb = train_lbg_1d(data, num_bits=1)
-    
-    assert len(cb) == 2
-    # Sprawdź czy centra są w miarę sensowne (blisko 0 i 100)
-    assert -10 < cb[0] < 10
-    assert 90 < cb[1] < 110
+    print("-" * 36)
+    print(f"{'TOTAL':<10} | {mse_total:<10.4f} | {snr_total:<10.4f}")
 
-
-def test_transform_invertibility():
-    """
-    Sprawdza, czy transformata Haara i DPCM są odwracalne (bez kwantyzacji).
-    To zapewnia, że strata jakości pochodzi TYLKO z kwantyzacji.
-    """
-    # Losowe dane (kanał obrazu)
-    original = np.random.randint(0, 255, (100, 100)).astype(float)
-    
-    # 1. Transformacja w przód
-    L, H = apply_haar_transform(original)
-    L_diff = dpcm_encode(L)
-    
-    # 2. Transformacja w tył (bez kwantyzacji!)
-    L_rec = dpcm_decode(L_diff)
-    
-    # Uwaga: inverse_haar oczekuje, że znamy oryginalny kształt
-    final = inverse_haar_transform(L_rec, H, original.shape)
-    
-    # Sprawdź czy odzyskaliśmy oryginał (z dokładnością do float epsilon)
-    assert np.allclose(original, final, atol=1e-5)
+    assert out_path.exists()

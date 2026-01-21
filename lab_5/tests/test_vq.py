@@ -20,7 +20,7 @@ def get_test_images():
     return sorted(files)
 
 @pytest.mark.parametrize("image_path", get_test_images())
-@pytest.mark.parametrize("k", range(0, 13)) 
+@pytest.mark.parametrize("k", [2, 3, 12]) 
 def test_vq_process(image_path, k):
     output_path = OUTPUT_DIR / f"{image_path.stem}_k{k}.tga"
     

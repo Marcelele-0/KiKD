@@ -1,8 +1,5 @@
 import numpy as np
 
-
-def quantize_1d(data: np.ndarray, codebook: np.ndarray) -> np.ndarray:
-def dequantize_1d(indices: np.ndarray, codebook: np.ndarray) -> np.ndarray:
 def train_lbg_1d(data: np.ndarray, num_bits: int, epsilon: float = 0.01) -> np.ndarray:
     """
     Trains a non-uniform quantizer (LBG algorithm) for 1D data.

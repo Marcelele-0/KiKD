@@ -1,9 +1,6 @@
 import numpy as np
 
 
-def inverse_haar_transform(low: np.ndarray, high: np.ndarray, original_shape: tuple) -> np.ndarray:
-def dpcm_encode(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-def dpcm_decode(dc_column: np.ndarray, diffs: np.ndarray) -> np.ndarray:
 def apply_haar_transform(channel: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Splits an image channel into low (average) and high (difference) bands using the Haar transform.
